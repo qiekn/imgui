@@ -17,7 +17,7 @@
 // Missing features:
 //  [ ] Renderer: Multi-viewport support (multiple windows).
 
-// You can copy and use unmodified imgui_impl_* files in your project. See examples/ folder for examples of using this.
+// You can use unmodified imgui_impl_* files in your project. See examples/ folder for examples of using this.
 // Prefer including the entire imgui/ repository into your project (either as a copy or as a submodule), and only build the backends you need.
 // Learn about Dear ImGui:
 // - FAQ                  https://dearimgui.com/faq
@@ -26,6 +26,9 @@
 // - Introduction, links and more at the top of imgui.cpp
 
 // CHANGELOG
+// (minor and older changes stripped away, please see git history for details)
+//  2026-03-12: Fixed invalid assert in ImGui_ImplSDLRenderer3_UpdateTexture() if ImTextureID_Invalid is defined to be != 0, which became the default since 2026-03-12. (#9295)
+//  2025-09-18: Call platform_io.ClearRendererHandlers() on shutdown.
 //  2025-06-11: Added support for ImGuiBackendFlags_RendererHasTextures, for dynamic font atlas. Removed ImGui_ImplSDLRenderer3_CreateFontsTexture() and ImGui_ImplSDLRenderer3_DestroyFontsTexture().
 //  2025-01-18: Use endian-dependent RGBA32 texture format, to match SDL_Color.
 //  2024-10-09: Expose selected render state in ImGui_ImplSDLRenderer3_RenderState, which you can access in 'void* platform_io.Renderer_RenderState' during draw callbacks.
@@ -70,39 +73,6 @@ static ImGui_ImplSDLRenderer3_Data* ImGui_ImplSDLRenderer3_GetBackendData()
 }
 
 // Functions
-bool ImGui_ImplSDLRenderer3_Init(SDL_Renderer* renderer)
-{
-    ImGuiIO& io = ImGui::GetIO();
-    IMGUI_CHECKVERSION();
-    IM_ASSERT(io.BackendRendererUserData == nullptr && "Already initialized a renderer backend!");
-    IM_ASSERT(renderer != nullptr && "SDL_Renderer not initialized!");
-
-    // Setup backend capabilities flags
-    ImGui_ImplSDLRenderer3_Data* bd = IM_NEW(ImGui_ImplSDLRenderer3_Data)();
-    io.BackendRendererUserData = (void*)bd;
-    io.BackendRendererName = "imgui_impl_sdlrenderer3";
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;  // We can honor the ImDrawCmd::VtxOffset field, allowing for large meshes.
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;   // We can honor ImGuiPlatformIO::Textures[] requests during render.
-
-    bd->Renderer = renderer;
-
-    return true;
-}
-
-void ImGui_ImplSDLRenderer3_Shutdown()
-{
-    ImGui_ImplSDLRenderer3_Data* bd = ImGui_ImplSDLRenderer3_GetBackendData();
-    IM_ASSERT(bd != nullptr && "No renderer backend to shutdown, or already shutdown?");
-    ImGuiIO& io = ImGui::GetIO();
-
-    ImGui_ImplSDLRenderer3_DestroyDeviceObjects();
-
-    io.BackendRendererName = nullptr;
-    io.BackendRendererUserData = nullptr;
-    io.BackendFlags &= ~(ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures);
-    IM_DELETE(bd);
-}
-
 static void ImGui_ImplSDLRenderer3_SetupRenderState(SDL_Renderer* renderer)
 {
     // Clear out any viewports and cliprect set by the user
@@ -253,7 +223,7 @@ void ImGui_ImplSDLRenderer3_UpdateTexture(ImTextureData* tex)
     {
         // Create and upload new texture to graphics system
         //IMGUI_DEBUG_LOG("UpdateTexture #%03d: WantCreate %dx%d\n", tex->UniqueID, tex->Width, tex->Height);
-        IM_ASSERT(tex->TexID == 0 && tex->BackendUserData == nullptr);
+        IM_ASSERT(tex->TexID == ImTextureID_Invalid && tex->BackendUserData == nullptr);
         IM_ASSERT(tex->Format == ImTextureFormat_RGBA32);
 
         // Create texture
@@ -282,10 +252,9 @@ void ImGui_ImplSDLRenderer3_UpdateTexture(ImTextureData* tex)
     }
     else if (tex->Status == ImTextureStatus_WantDestroy)
     {
-        SDL_Texture* sdl_texture = (SDL_Texture*)(intptr_t)tex->TexID;
-        if (sdl_texture == nullptr)
-            return;
-        SDL_DestroyTexture(sdl_texture);
+        if (tex->TexID != ImTextureID_Invalid)
+            if (SDL_Texture* sdl_texture = (SDL_Texture*)(intptr_t)tex->TexID)
+                SDL_DestroyTexture(sdl_texture);
 
         // Clear identifiers and mark as destroyed (in order to allow e.g. calling InvalidateDeviceObjects while running)
         tex->SetTexID(ImTextureID_Invalid);
@@ -306,6 +275,41 @@ void ImGui_ImplSDLRenderer3_DestroyDeviceObjects()
             tex->SetStatus(ImTextureStatus_WantDestroy);
             ImGui_ImplSDLRenderer3_UpdateTexture(tex);
         }
+}
+
+bool ImGui_ImplSDLRenderer3_Init(SDL_Renderer* renderer)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    IMGUI_CHECKVERSION();
+    IM_ASSERT(io.BackendRendererUserData == nullptr && "Already initialized a renderer backend!");
+    IM_ASSERT(renderer != nullptr && "SDL_Renderer not initialized!");
+
+    // Setup backend capabilities flags
+    ImGui_ImplSDLRenderer3_Data* bd = IM_NEW(ImGui_ImplSDLRenderer3_Data)();
+    io.BackendRendererUserData = (void*)bd;
+    io.BackendRendererName = "imgui_impl_sdlrenderer3";
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;  // We can honor the ImDrawCmd::VtxOffset field, allowing for large meshes.
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;   // We can honor ImGuiPlatformIO::Textures[] requests during render.
+
+    bd->Renderer = renderer;
+
+    return true;
+}
+
+void ImGui_ImplSDLRenderer3_Shutdown()
+{
+    ImGui_ImplSDLRenderer3_Data* bd = ImGui_ImplSDLRenderer3_GetBackendData();
+    IM_ASSERT(bd != nullptr && "No renderer backend to shutdown, or already shutdown?");
+    ImGuiIO& io = ImGui::GetIO();
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+
+    ImGui_ImplSDLRenderer3_DestroyDeviceObjects();
+
+    io.BackendRendererName = nullptr;
+    io.BackendRendererUserData = nullptr;
+    io.BackendFlags &= ~(ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures);
+    platform_io.ClearRendererHandlers();
+    IM_DELETE(bd);
 }
 
 //-----------------------------------------------------------------------------

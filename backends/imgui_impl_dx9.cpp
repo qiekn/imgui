@@ -18,7 +18,9 @@
 
 // CHANGELOG
 // (minor and older changes stripped away, please see git history for details)
-//  2025-XX-XX: Platform: Added support for multiple windows via the ImGuiPlatformIO interface.
+//  2026-XX-XX: Platform: Added support for multiple windows via the ImGuiPlatformIO interface.
+//  2026-03-19: Fixed issue in ImGui_ImplDX9_UpdateTexture() if ImTextureID_Invalid is defined to be != 0, which became the default since 2026-03-12. (#9295, #9310)
+//  2025-09-18: Call platform_io.ClearRendererHandlers() on shutdown.
 //  2025-06-11: DirectX9: Added support for ImGuiBackendFlags_RendererHasTextures, for dynamic font atlas.
 //  2024-10-07: DirectX9: Changed default texture sampler to Clamp instead of Repeat/Wrap.
 //  2024-02-12: DirectX9: Using RGBA format when supported by the driver to avoid CPU side conversion. (#6575)
@@ -336,47 +338,6 @@ static bool ImGui_ImplDX9_CheckFormatSupport(LPDIRECT3DDEVICE9 pDevice, D3DFORMA
     return support;
 }
 
-bool ImGui_ImplDX9_Init(IDirect3DDevice9* device)
-{
-    ImGuiIO& io = ImGui::GetIO();
-    IMGUI_CHECKVERSION();
-    IM_ASSERT(io.BackendRendererUserData == nullptr && "Already initialized a renderer backend!");
-
-    // Setup backend capabilities flags
-    ImGui_ImplDX9_Data* bd = IM_NEW(ImGui_ImplDX9_Data)();
-    io.BackendRendererUserData = (void*)bd;
-    io.BackendRendererName = "imgui_impl_dx9";
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;  // We can honor the ImDrawCmd::VtxOffset field, allowing for large meshes.
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;   // We can honor ImGuiPlatformIO::Textures[] requests during render.
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;  // We can create multi-viewports on the Renderer side (optional)
-
-    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-    platform_io.Renderer_TextureMaxWidth = platform_io.Renderer_TextureMaxHeight = 4096;
-
-    bd->pd3dDevice = device;
-    bd->pd3dDevice->AddRef();
-    bd->HasRgbaSupport = ImGui_ImplDX9_CheckFormatSupport(bd->pd3dDevice, D3DFMT_A8B8G8R8);
-
-    ImGui_ImplDX9_InitMultiViewportSupport();
-
-    return true;
-}
-
-void ImGui_ImplDX9_Shutdown()
-{
-    ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData();
-    IM_ASSERT(bd != nullptr && "No renderer backend to shutdown, or already shutdown?");
-    ImGuiIO& io = ImGui::GetIO();
-
-    ImGui_ImplDX9_ShutdownMultiViewportSupport();
-    ImGui_ImplDX9_InvalidateDeviceObjects();
-    if (bd->pd3dDevice) { bd->pd3dDevice->Release(); }
-    io.BackendRendererName = nullptr;
-    io.BackendRendererUserData = nullptr;
-    io.BackendFlags &= ~(ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures | ImGuiBackendFlags_RendererHasViewports);
-    IM_DELETE(bd);
-}
-
 // Convert RGBA32 to BGRA32 (because RGBA32 is not well supported by DX9 devices)
 static void ImGui_ImplDX9_CopyTextureRegion(bool tex_use_colors, const ImU32* src, int src_pitch, ImU32* dst, int dst_pitch, int w, int h)
 {
@@ -444,14 +405,15 @@ void ImGui_ImplDX9_UpdateTexture(ImTextureData* tex)
     }
     else if (tex->Status == ImTextureStatus_WantDestroy)
     {
-        LPDIRECT3DTEXTURE9 backend_tex = (LPDIRECT3DTEXTURE9)tex->TexID;
-        if (backend_tex == nullptr)
-            return;
-        IM_ASSERT(tex->TexID == (ImTextureID)(intptr_t)backend_tex);
-        backend_tex->Release();
+        if (tex->TexID != ImTextureID_Invalid)
+            if (LPDIRECT3DTEXTURE9 backend_tex = (LPDIRECT3DTEXTURE9)tex->TexID)
+            {
+                IM_ASSERT(tex->TexID == (ImTextureID)(intptr_t)backend_tex);
+                backend_tex->Release();
 
-        // Clear identifiers and mark as destroyed (in order to allow e.g. calling InvalidateDeviceObjects while running)
-        tex->SetTexID(ImTextureID_Invalid);
+                // Clear identifiers and mark as destroyed (in order to allow e.g. calling InvalidateDeviceObjects while running)
+                tex->SetTexID(ImTextureID_Invalid);
+            }
         tex->SetStatus(ImTextureStatus_Destroyed);
     }
 }
@@ -488,6 +450,50 @@ void ImGui_ImplDX9_NewFrame()
     ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData();
     IM_ASSERT(bd != nullptr && "Context or backend not initialized! Did you call ImGui_ImplDX9_Init()?");
     IM_UNUSED(bd);
+}
+
+bool ImGui_ImplDX9_Init(IDirect3DDevice9* device)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    IMGUI_CHECKVERSION();
+    IM_ASSERT(io.BackendRendererUserData == nullptr && "Already initialized a renderer backend!");
+
+    // Setup backend capabilities flags
+    ImGui_ImplDX9_Data* bd = IM_NEW(ImGui_ImplDX9_Data)();
+    io.BackendRendererUserData = (void*)bd;
+    io.BackendRendererName = "imgui_impl_dx9";
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;  // We can honor the ImDrawCmd::VtxOffset field, allowing for large meshes.
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;   // We can honor ImGuiPlatformIO::Textures[] requests during render.
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;  // We can create multi-viewports on the Renderer side (optional)
+
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    platform_io.Renderer_TextureMaxWidth = platform_io.Renderer_TextureMaxHeight = 4096;
+
+    bd->pd3dDevice = device;
+    bd->pd3dDevice->AddRef();
+    bd->HasRgbaSupport = ImGui_ImplDX9_CheckFormatSupport(bd->pd3dDevice, D3DFMT_A8B8G8R8);
+
+    ImGui_ImplDX9_InitMultiViewportSupport();
+
+    return true;
+}
+
+void ImGui_ImplDX9_Shutdown()
+{
+    ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData();
+    IM_ASSERT(bd != nullptr && "No renderer backend to shutdown, or already shutdown?");
+    ImGuiIO& io = ImGui::GetIO();
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+
+    ImGui_ImplDX9_ShutdownMultiViewportSupport();
+    ImGui_ImplDX9_InvalidateDeviceObjects();
+    if (bd->pd3dDevice) { bd->pd3dDevice->Release(); }
+
+    io.BackendRendererName = nullptr;
+    io.BackendRendererUserData = nullptr;
+    io.BackendFlags &= ~(ImGuiBackendFlags_RendererHasVtxOffset | ImGuiBackendFlags_RendererHasTextures | ImGuiBackendFlags_RendererHasViewports);
+    platform_io.ClearRendererHandlers();
+    IM_DELETE(bd);
 }
 
 //--------------------------------------------------------------------------------------------------------
