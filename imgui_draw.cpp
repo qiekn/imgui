@@ -1484,6 +1484,24 @@ void ImDrawList::AddLine(const ImVec2& p1, const ImVec2& p2, ImU32 col, float th
     PathStroke(col, 0, thickness);
 }
 
+void ImDrawList::AddLineH(float min_x, float max_x, float y, ImU32 col, float thickness)
+{
+    if ((col & IM_COL32_A_MASK) == 0)
+        return;
+    PathLineTo(ImVec2(min_x + 0.5f, y + 0.5f)); // Same as AddLine() above.
+    PathLineTo(ImVec2(max_x + 0.5f, y + 0.5f));
+    PathStroke(col, 0, thickness);
+}
+
+void ImDrawList::AddLineV(float x, float min_y, float max_y, ImU32 col, float thickness)
+{
+    if ((col & IM_COL32_A_MASK) == 0)
+        return;
+    PathLineTo(ImVec2(x + 0.5f, min_y + 0.5f)); // Same as AddLine() above.
+    PathLineTo(ImVec2(x + 0.5f, max_y + 0.5f));
+    PathStroke(col, 0, thickness);
+}
+
 // p_min = upper-left, p_max = lower-right
 // Note we don't render 1 pixels sized rectangles properly.
 void ImDrawList::AddRect(const ImVec2& p_min, const ImVec2& p_max, ImU32 col, float rounding, ImDrawFlags flags, float thickness)
@@ -1659,7 +1677,7 @@ void ImDrawList::AddEllipse(const ImVec2& center, const ImVec2& radius, ImU32 co
     // Because we are filling a closed shape we remove 1 from the count of segments/points
     const float a_max = IM_PI * 2.0f * ((float)num_segments - 1.0f) / (float)num_segments;
     PathEllipticalArcTo(center, radius, rot, 0.0f, a_max, num_segments - 1);
-    PathStroke(col, true, thickness);
+    PathStroke(col, ImDrawFlags_Closed, thickness);
 }
 
 void ImDrawList::AddEllipseFilled(const ImVec2& center, const ImVec2& radius, ImU32 col, float rot, int num_segments)
@@ -2955,12 +2973,17 @@ void ImFontAtlasTextureBlockCopy(ImTextureData* src_tex, int src_x, int src_y, I
         memcpy(dst_tex->GetPixelsAt(dst_x, dst_y + y), src_tex->GetPixelsAt(src_x, src_y + y), w * dst_tex->BytesPerPixel);
 }
 
-// Queue texture block update for renderer backend
 void ImFontAtlasTextureBlockQueueUpload(ImFontAtlas* atlas, ImTextureData* tex, int x, int y, int w, int h)
+{
+    ImTextureDataQueueUpload(tex, x, y, w, h);
+    atlas->TexIsBuilt = false;
+}
+
+// Queue texture block update for renderer backend
+void ImTextureDataQueueUpload(ImTextureData* tex, int x, int y, int w, int h)
 {
     IM_ASSERT(tex->Status != ImTextureStatus_WantDestroy && tex->Status != ImTextureStatus_Destroyed);
     IM_ASSERT(x >= 0 && x <= 0xFFFF && y >= 0 && y <= 0xFFFF && w >= 0 && x + w <= 0x10000 && h >= 0 && y + h <= 0x10000);
-    IM_UNUSED(atlas);
 
     ImTextureRect req = { (unsigned short)x, (unsigned short)y, (unsigned short)w, (unsigned short)h };
     int new_x1 = ImMax(tex->UpdateRect.w == 0 ? 0 : tex->UpdateRect.x + tex->UpdateRect.w, req.x + req.w);
@@ -2973,7 +2996,6 @@ void ImFontAtlasTextureBlockQueueUpload(ImFontAtlas* atlas, ImTextureData* tex, 
     tex->UsedRect.y = ImMin(tex->UsedRect.y, req.y);
     tex->UsedRect.w = (unsigned short)(ImMax(tex->UsedRect.x + tex->UsedRect.w, req.x + req.w) - tex->UsedRect.x);
     tex->UsedRect.h = (unsigned short)(ImMax(tex->UsedRect.y + tex->UsedRect.h, req.y + req.h) - tex->UsedRect.y);
-    atlas->TexIsBuilt = false;
 
     // No need to queue if status is == ImTextureStatus_WantCreate
     if (tex->Status == ImTextureStatus_OK || tex->Status == ImTextureStatus_WantUpdates)
